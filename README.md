@@ -1,2 +1,2 @@
-# dmenu-boltd
-dmenu-like boltd inteface
+# dmenu-sound
+dmenu-like inteface to PipeWire or PulseAudio throught pactl using.

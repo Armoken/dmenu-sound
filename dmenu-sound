@@ -1,0 +1,313 @@
+#!/usr/bin/env python
+import os
+import re
+import sys
+import enum
+import argparse
+import subprocess
+import logging
+from collections import defaultdict
+
+import dbus  # type: ignore
+
+
+logging.basicConfig(level=logging.INFO,
+                    format='%(asctime)s %(levelname)-8s %(message)s')
+
+
+class DynamicMenuError(Exception):
+    pass
+
+
+class CommandError(Exception):
+    pass
+
+
+class NotificationType(enum.Enum):
+    Info = 0
+    Warn = 1
+    Error = 2
+
+
+class CardProfile:
+    name: str
+    description: str
+
+    def __init__(self, name: str, description: str) -> None:
+        self.name = name
+        self.description = description
+
+    def __str__(self) -> str:
+        return f"CardProfile(name='{self.name}', description='{self.description}')"
+
+
+class CardInfo:
+    index: int
+    name: str
+    active_profile: str
+    profiles: list[CardProfile]
+
+    def __init__(self) -> None:
+        self.profiles = []
+
+    def __str__(self) -> str:
+        profiles = ", ".join([str(profile) for profile in self.profiles])
+
+        return "".join([f"CardInfo(index={self.index},",
+                        f" name='{self.name}',",
+                        f" active_profile='{self.active_profile}',",
+                        f" profiles=[{profiles}])"])
+
+
+class SinkInfo:
+    index: int
+    name: str
+    description: str
+
+    def __str__(self) -> str:
+        return "".join([f"SinkInfo(index={self.index},",
+                        f" name='{self.name}',"
+                        f" description='{self.description}')"])
+
+
+def get_notify_interface():
+    # Check existence of interface
+    try:
+        dbus.SessionBus().list_names()\
+                         .index("org.freedesktop.Notifications")  # type: ignore
+    except ValueError:
+        logging.warning("D-Bus object for notifications not exists!")
+        return
+
+    object = dbus.SessionBus().get_object("org.freedesktop.Notifications",
+                                          "/org/freedesktop/Notifications")
+    notify_interface = dbus.Interface(object, "org.freedesktop.Notifications")
+
+    return notify_interface
+
+
+def send_notification_about_success(headline, text):
+    notify_interface = get_notify_interface()
+
+    icon_name = "dialog-info"
+    notify_interface.Notify(  # type: ignore
+        "dmenu_systemd", 0, icon_name,
+        headline, text,
+        [], {"urgency": NotificationType.Info.value}, 3000
+    )
+
+
+def send_error_notification(headline, text):
+    notify_interface = get_notify_interface()
+
+    icon_name = "dialog-warning"
+    notify_interface.Notify(  # type: ignore
+        "dmenu_systemd", 0, icon_name,
+        headline, text,
+        [], {"urgency": NotificationType.Error.value}, 3000
+    )
+
+
+def show_menu(dmenu_command: list[str], lines: list[str]) -> str:
+    process = subprocess.Popen(
+        dmenu_command,
+        stdout=subprocess.PIPE,
+        stdin=subprocess.PIPE,
+        stderr=subprocess.PIPE
+    )
+    concatenated_lines = "\n".join(lines)
+    selected_line, errors = process.communicate(
+        input=concatenated_lines.encode()
+    )
+
+    selected_line = selected_line.decode().strip()
+    errors = errors.decode().strip()
+
+    if selected_line == "":
+        return ""
+    elif process.returncode != 0:
+        logging.warning(errors)
+        send_error_notification("Dynamic menu error!",
+                                "Return code: {}".format(process.returncode))
+
+        raise DynamicMenuError()
+
+    return selected_line
+
+
+def run_command(cmd: list[str]) -> list[str]:
+    process = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=os.environ
+    )
+
+    output, errors = process.communicate()
+    errors = errors.decode().strip()
+
+    if process.returncode != 0:
+        logging.error(errors)
+        send_error_notification(
+            "Terminal error!",
+            f"Return code: {process.returncode}.\n{errors}"
+        )
+        raise CommandError()
+
+    return output.decode().splitlines()
+
+
+def parse_arguments():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "-d", "--dmenu-command", type=str, action="store",
+        default="wofi --dmenu --gtk-dark --insensitive",
+        help="Command that invokes dmenu-like menu that will be used to show lines."
+    )
+
+    args = parser.parse_args()
+
+    return args
+
+
+def list_sinks() -> dict[int, SinkInfo]:
+    lines = run_command(["pactl", "list", "sinks"])
+
+    current_sink_idx = None
+    sink_info_map: dict[int, SinkInfo] = defaultdict(SinkInfo)
+
+    for line in lines:
+        match_obj = re.match(R"Sink\s+#(.+)", line)
+        if match_obj is not None:
+            current_sink_idx = int(match_obj.group(1))
+            sink_info_map[current_sink_idx].index = current_sink_idx
+            continue
+
+        assert current_sink_idx is not None
+
+        match_obj = re.match(R"\s+Name:\s+(.+)", line)
+        if match_obj is not None:
+            sink_info_map[current_sink_idx].name = match_obj.group(1).strip()
+            continue
+
+        match_obj = re.match(R"\s+Description:\s+(.+)", line)
+        if match_obj is not None:
+            sink_info_map[current_sink_idx].description = match_obj.group(1).strip()
+            continue
+
+    return sink_info_map
+
+
+def list_cards() -> dict[int, CardInfo]:
+    lines = run_command(["pactl", "list", "cards"])
+
+    current_card_idx = None
+    is_profiles_lines = False
+    card_info_map: dict[int, CardInfo] = defaultdict(CardInfo)
+
+    for line in lines:
+        match_obj = re.match(R"Card\s+#(.+)", line)
+        if match_obj is not None:
+            current_card_idx = int(match_obj.group(1))
+            card_info_map[current_card_idx].index = current_card_idx
+            continue
+
+        assert current_card_idx is not None
+
+        match_obj = re.match(R"\s+Name:\s+(.+)", line)
+        if match_obj is not None:
+            card_info_map[current_card_idx].name = match_obj.group(1).strip()
+            continue
+
+        match_obj = re.match(R"\s+Profiles:", line)
+        if match_obj is not None:
+            is_profiles_lines = True
+            continue
+
+        match_obj = re.match(R"\s+(.+):\s(.+)(\(.+\))", line)
+        if is_profiles_lines and match_obj is not None:
+            card_info_map[current_card_idx].profiles.append(
+                CardProfile(
+                    match_obj.group(1).strip(),
+                    match_obj.group(2).strip()
+                )
+            )
+
+        match_obj = re.match(R"\s+Active Profile:\s(.+)", line)
+        if match_obj is not None:
+            is_profiles_lines = False
+            card_info_map[current_card_idx].active_profile = match_obj.group(1).strip()
+            continue
+
+    return card_info_map
+
+
+def select_card(
+    dmenu_command: list[str],
+    card_info_map: dict[int, CardInfo]
+) -> CardInfo:
+    names = [card_info.name for card_info in card_info_map.values()]
+    selected_name = show_menu(dmenu_command, names)
+    logging.info(f"Selected card name: {selected_name}")
+
+    selected_card_info = next(info for info in card_info_map.values()
+                               if info.name == selected_name)
+    return selected_card_info
+
+
+def select_card_profile(
+    dmenu_command: list[str],
+    card_info: CardInfo
+) -> str:
+    descriptions = [profile_info.description for profile_info in card_info.profiles]
+    selected_description = show_menu(dmenu_command, descriptions)
+    logging.info(f"Selected card profile name: {selected_description}")
+
+    selected_profile = next(profile_info for profile_info in card_info.profiles
+                             if profile_info.description == selected_description)
+
+    return selected_profile.name
+
+
+def set_card_profile(profile: str, card_info: CardInfo):
+    run_command(["pactl", "set-card-profile", str(card_info.index), profile])
+
+
+def select_sink(
+    dmenu_command: list[str],
+    sink_info_map: dict[int, SinkInfo]
+) -> SinkInfo:
+    names = [card_info.name for card_info in sink_info_map.values()]
+    selected_name = show_menu(dmenu_command, names)
+
+    selected_sink_info = next((info for info in sink_info_map.values()
+                               if info.name == selected_name))
+    return selected_sink_info
+
+
+def set_sink(sink_info: SinkInfo):
+    run_command(["pactl", "set-default-sink", sink_info.name])
+
+
+def main():
+    args = parse_arguments()
+    dmenu_command = args.dmenu_command.split(" ")
+
+    selected = show_menu(dmenu_command, ["Profiles", "Sinks"])
+    if selected == "Sinks":
+        sinks = list_sinks()
+        selected_sink = select_sink(dmenu_command, sinks)
+        set_sink(selected_sink)
+    elif selected == "Profiles":
+        cards = list_cards()
+        selected_card = select_card(dmenu_command, cards)
+        selected_profile = select_card_profile(dmenu_command, selected_card)
+        set_card_profile(selected_profile, selected_card)
+    else:
+        assert False, "Not implemented"
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
