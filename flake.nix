@@ -16,10 +16,16 @@
         pname = "dmenu-sound";
         version = "1.0";
 
+        propagatedBuildInputs = with pkgs.python3Packages; [
+          dbus-python
+        ];
+
         src = ./.;
       };
       python-with-packages = ((pkgs.python3Full.withPackages(ps: [
         ps.ipython # IPython: Productive Interactive Computing.
+
+        ps.dbus-python
       ])).overrideAttrs (args: { ignoreCollisions = true; doCheck = false; }));
     in {
       defaultPackage = dmenu-sound;
