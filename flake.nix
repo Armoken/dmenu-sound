@@ -17,7 +17,7 @@
         version = "1.0";
 
         propagatedBuildInputs = with pkgs.python3Packages; [
-          dbus-python
+          dbus-python # A zero-dependency DBus library for Python with asyncio support.
         ];
 
         src = ./.;

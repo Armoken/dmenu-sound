@@ -44,6 +44,7 @@ class CardProfile:
 class CardInfo:
     index: int
     name: str
+    description: str
     active_profile: str
     profiles: list[CardProfile]
 
@@ -55,6 +56,7 @@ class CardInfo:
 
         return "".join([f"CardInfo(index={self.index},",
                         f" name='{self.name}',",
+                        f" description='{self.description}',",
                         f" active_profile='{self.active_profile}',",
                         f" profiles=[{profiles}])"])
 
@@ -219,6 +221,13 @@ def list_cards() -> dict[int, CardInfo]:
             card_info_map[current_card_idx].name = match_obj.group(1).strip()
             continue
 
+        match_obj = re.match(R"\s+device.description\s=\s+(.+)", line)
+        if match_obj is not None:
+            card_info_map[current_card_idx].description = match_obj.group(1)\
+                                                                   .strip()\
+                                                                   .replace("\"", "")
+            continue
+
         match_obj = re.match(R"\s+Profiles:", line)
         if match_obj is not None:
             is_profiles_lines = True
@@ -246,12 +255,12 @@ def select_card(
     dmenu_command: list[str],
     card_info_map: dict[int, CardInfo]
 ) -> CardInfo:
-    names = [card_info.name for card_info in card_info_map.values()]
-    selected_name = show_menu(dmenu_command, names)
-    logging.info(f"Selected card name: {selected_name}")
+    descriptions = [card_info.description for card_info in card_info_map.values()]
+    selected_description = show_menu(dmenu_command, descriptions)
+    logging.info(f"Selected card name: {selected_description}")
 
     selected_card_info = next(info for info in card_info_map.values()
-                               if info.name == selected_name)
+                               if info.description == selected_description)
     return selected_card_info
 
 
@@ -277,11 +286,11 @@ def select_sink(
     dmenu_command: list[str],
     sink_info_map: dict[int, SinkInfo]
 ) -> SinkInfo:
-    names = [card_info.name for card_info in sink_info_map.values()]
-    selected_name = show_menu(dmenu_command, names)
+    names = [card_info.description for card_info in sink_info_map.values()]
+    selected_description = show_menu(dmenu_command, names)
 
     selected_sink_info = next((info for info in sink_info_map.values()
-                               if info.name == selected_name))
+                               if info.description == selected_description))
     return selected_sink_info
 
 
