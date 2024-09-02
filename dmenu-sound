@@ -11,7 +11,7 @@ from collections import defaultdict
 import dbus  # type: ignore
 
 
-logging.basicConfig(level=logging.INFO,
+logging.basicConfig(level=logging.WARNING,
                     format='%(asctime)s %(levelname)-8s %(message)s')
 
 
@@ -70,6 +70,15 @@ class SinkInfo:
         return "".join([f"SinkInfo(index={self.index},",
                         f" name='{self.name}',"
                         f" description='{self.description}')"])
+
+
+class SinkInput:
+    index: int
+    name: str
+
+    def __str__(self) -> str:
+        return "".join([f"SinkInput(index={self.index},",
+                        f" name='{self.name}')"])
 
 
 def get_notify_interface():
@@ -200,6 +209,24 @@ def list_sinks() -> dict[int, SinkInfo]:
     return sink_info_map
 
 
+def list_sink_inputs() -> dict[int, SinkInput]:
+    lines = run_command(["pactl", "list", "sink-inputs"])
+
+    current_sink_input_idx = None
+    sink_input_info_map: dict[int, SinkInput] = defaultdict(SinkInput)
+
+    for line in lines:
+        match_obj = re.match(R"Sink Input\s+#(.+)", line)
+        if match_obj is not None:
+            current_sink_input_idx = int(match_obj.group(1))
+            sink_input_info_map[current_sink_input_idx].index = current_sink_input_idx
+            continue
+
+        assert current_sink_input_idx is not None
+
+    return sink_input_info_map
+
+
 def list_cards() -> dict[int, CardInfo]:
     lines = run_command(["pactl", "list", "cards"])
 
@@ -298,6 +325,12 @@ def set_sink(sink_info: SinkInfo):
     run_command(["pactl", "set-default-sink", sink_info.name])
 
 
+def move_sink_inputs(sink_info: SinkInfo, sink_inputs: dict[int, SinkInput]):
+    for input_idx in sink_inputs.keys():
+        logging.info(f"Sink input {input_idx} moved to {sink_info.description}")
+        run_command(["pactl", "move-sink-input", str(input_idx), sink_info.name])
+
+
 def main():
     args = parse_arguments()
     dmenu_command = args.dmenu_command.split(" ")
@@ -307,6 +340,9 @@ def main():
         sinks = list_sinks()
         selected_sink = select_sink(dmenu_command, sinks)
         set_sink(selected_sink)
+
+        inputs = list_sink_inputs()
+        move_sink_inputs(selected_sink, inputs)
     elif selected == "Profiles":
         cards = list_cards()
         selected_card = select_card(dmenu_command, cards)
